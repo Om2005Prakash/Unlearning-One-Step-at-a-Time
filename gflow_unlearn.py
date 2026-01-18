@@ -439,51 +439,6 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
         unet = torch.compile(unet)
         unet_orig = torch.compile(unet_orig)
 
-    if config.test_loss_scale:
-        traj_batch = generate(
-            unet=unet_orig,
-            vae=None,
-            scheduler=scheduler,
-            cfg=config.cfg,
-            guidance_scale=config.guidance_scale,
-            uncond_embeddings=uncond_embeds,
-            text_embeddings=anchor_embeds,
-            num_inference_steps=config.infer_steps,
-            start_latents=None,
-            return_traj=True,
-        )
-
-        _, B, C, H, W = traj_batch.shape
-
-        for idx_t, idx_t_1 in zip(idx_ts, idx_t_1s):
-            
-            t = scheduler.timesteps[idx_t].repeat(B)
-            t_1 = scheduler.timesteps[idx_t_1].repeat(B)
-
-            x_t = traj_batch[idx_t][0]
-            x_t_1 = traj_batch[idx_t_1][0]
-
-            noise_pred_x_t = unet_orig(x_t, t, encoder_hidden_states=anchor_embeds).sample
-
-            with torch.inference_mode():
-                noise_pred_x_t_1 = unet_orig(x_t_1, t_1, encoder_hidden_states=anchor_embeds).sample
-            
-            alpha_cumprod_t = alphas_cumprod[t].view(B, 1, 1, 1)
-            alpha_cumprod_t_1 = alphas_cumprod[t_1].view(B, 1, 1, 1)
-
-            # Wrong Scaling HERE
-            # term1 = (x_t - torch.sqrt(alpha_t) * x_t_1)/torch.sqrt(1-alpha_cumprod_t)
-            # term2 = (torch.sqrt(alpha_t)*torch.sqrt(1-alpha_cumprod_t_1)/torch.sqrt(1-alpha_cumprod_t))*noise_pred_x_t_1
-            # target = term1 + term2
-
-            target = (torch.sqrt(1-alpha_cumprod_t)*torch.sqrt(alpha_cumprod_t_1))/(torch.sqrt(alpha_cumprod_t)*torch.sqrt(1-alpha_cumprod_t_1))*noise_pred_x_t_1
-
-            loss = F.mse_loss(noise_pred_x_t, target)
-            logs = {"loss": loss.item()}
-            accelerator.log(logs, step=global_step)
-            global_step+=1
-        return
-
     progress_bar = tqdm(range(config.num_epochs), disable=not accelerator.is_local_main_process)
     for epoch in progress_bar:
         progress_bar.set_description(f"Epoch {epoch}")
