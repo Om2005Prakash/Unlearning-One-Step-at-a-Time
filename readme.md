@@ -1,30 +1,35 @@
 # Editing *Monet → Van Gogh*
 
+## Quick Use
+
 ```bash
-python train.py \
-  --model_id "CompVis/stable-diffusion-v1-4" \
-  --target_prompt "Claude Monet" \
-  --anchor_prompt "Van Gogh" \
-  --time_max 300 \
-  --time_min 5 \
-  --infer_steps 20 \
-  --cfg \
-  --guidance_scale 5.0 \
-  --num_epochs 50 \
-  --batch_size 48 \
-  --mixed_precision "bf16" \
-  --use_lora \
-  --lora_rank 4 \
-  --seed 123445 \
-  --lr 1e-4 \
-  --save_freq 10 \
-  --max_grad_norm 1.0 \
-  --accumulation_steps 1 \
-  --ema 0 \
-  --save_dir "./" \
-  --wandb "GflowUnlearn" \
-  --eval_prompts \
-    "San Giorgio Maggiore at Dusk, in style of Claude Monet" \
-    "San Giorgio Maggiore at Dusk, in style of Claude Monet" \
-    "San Giorgio Maggiore at Dusk, in style of Van Gogh" \
-  --eval_freq 1
+!python gflow_unlearn.py \
+--model_id "CompVis/stable-diffusion-v1-4" \
+--name "monet_to_vangogh" \
+--target_prompt "monet" \
+--anchor_prompt "vangogh" \
+--paired_prompt_dataset "paried_prompts.csv" \
+--time_max 999 \
+--time_min 0 \
+--infer_steps 20 \
+--cfg \
+--guidance_scale 5.0 \
+--num_epochs 1000 \
+--batch_size 8 \
+--mixed_precision "bf16" \
+--use_lora \
+--lora_rank 4 \
+--seed 123345 \
+--lr 1e-4\
+--save_freq 20 \
+--max_grad_norm 1.0 \
+--accumulation_steps 1 \
+--ema 0 \
+--save_dir "./unlearned_models" \
+--wandb "GFlow Unlearn"\
+--eval_freq 1 \
+--eval_prompts "San Giorgio Maggiore at Dusk, in style of Monet_San Giorgio Maggiore at Dusk, in style of Monet_San Giorgio Maggiore at Dusk, in style of Van Gogh"
+```
+
+## Replacing Monet art to Van Gogh art
+![Example Result](./out.gif)
