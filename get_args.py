@@ -1,3 +1,5 @@
+%%writefile /kaggle/working/get_args.py
+
 import argparse
 
 """
@@ -38,6 +40,12 @@ def get_args():
         help="HuggingFace repo or local path for Stable Diffusion."
     )
 
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Name of the experiment."
+    )
     # Objective Args
     parser.add_argument(
         "--target_prompt",
@@ -50,6 +58,12 @@ def get_args():
         type=str,
         required=True,
         help="Safe prompt used for sampling."
+    )
+    parser.add_argument(
+        "--paired_prompt_dataset",
+        type=str,
+        default="",
+        help=""
     )
     parser.add_argument(
         "--time_min", 
@@ -82,6 +96,17 @@ def get_args():
     )
 
     # Training Args
+    parser.add_argument(
+        "--lora_checkpoint",
+        type=str,
+        default="",
+        help=""
+    )
+    parser.add_argument(
+        "--compile_model",
+        action="store_true",
+        help="Compile the model."
+    )
     parser.add_argument(
         "--num_epochs",
         type=int,

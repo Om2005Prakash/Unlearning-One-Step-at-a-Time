@@ -1,17 +1,10 @@
-%%writefile train.py
-
-"""
-Plan:
-
-1> Take arg time range to perform alignment, also take infer_steps
-2> Sample a batch of forget concept trajectories
-3> Update
-"""
+%%writefile gflow_unlearn.py
 
 import os
 import glob
 from pathlib import Path
 import wandb
+import pandas as pd
 
 import math
 
@@ -32,9 +25,10 @@ from safetensors.torch import save_file
 from PIL import Image
 from matplotlib import pyplot as plt
 
-from diffusers import DiffusionPipeline, LMSDiscreteScheduler, DDPMScheduler
+from diffusers import StableDiffusionPipeline, DiffusionPipeline, LMSDiscreteScheduler, DDPMScheduler
 from diffusers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule
 from diffusers.training_utils import cast_training_params
+from diffusers.utils import convert_state_dict_to_diffusers
 
 from transformers import CLIPProcessor, CLIPModel
 
@@ -43,19 +37,24 @@ from accelerate.utils import gather_object
 from diffusers.training_utils import EMAModel
 
 from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 
 args = get_args()
 """
 model_id
 
+name
 target_prompt
 anchor_prompt
+paired_prompt_dataset
 time_max
 time_min
 infer_steps
 cfg
 guidance_scale
 
+lora_checkpoint
+compile_model
 num_epochs
 batch_size
 mixed_precision
@@ -80,14 +79,18 @@ test_loss_scale
 class Config:
     model_id = args.model_id
 
+    name = args.name
     target_prompt=args.target_prompt
     anchor_prompt=args.anchor_prompt
+    paired_prompt_dataset=args.paired_prompt_dataset
     time_max = args.time_max
     time_min = args.time_min
     infer_steps = args.infer_steps
     cfg = args.cfg
     guidance_scale = args.guidance_scale
 
+    lora_checkpoint = args.lora_checkpoint
+    compile_model = args.compile_model
     num_epochs = args.num_epochs
     batch_size = args.batch_size
     mixed_precision = args.mixed_precision
@@ -115,8 +118,10 @@ Configuration Summary:
 ----------------------
 model_id        : {config.model_id}
 
+name            : {config.name}
 target_prompt   : {config.target_prompt}
 anchor_prompt   : {config.anchor_prompt}
+paired_prompt_dataset : {config.paired_prompt_dataset}
 time_max        : {config.time_max}
 time_min        : {config.time_min}
 infer_steps     : {config.infer_steps}
@@ -183,6 +188,9 @@ torch_dtype = get_dtype(config.mixed_precision)
 pipe = DiffusionPipeline.from_pretrained(config.model_id, torch_dtype=torch_dtype, safety_checker=None)
 pipe_orig = DiffusionPipeline.from_pretrained(config.model_id, torch_dtype=torch_dtype, safety_checker=None)
 
+if config.lora_checkpoint != "":
+    pipe.load_lora_weights(config.lora_checkpoint)
+
 text_encoder = pipe.text_encoder
 tokenizer = pipe.tokenizer
 unet = pipe.unet
@@ -227,6 +235,63 @@ else:
 optimizer = torch.optim.AdamW(unet.parameters(), lr=config.lr)
 lr_scheduler = get_constant_schedule(
     optimizer=optimizer,
+)
+
+class paired_prompts_dataset(Dataset):
+    def __init__(self, paired_prompt_dataset):
+        self.paired_prompt_dataset = paired_prompt_dataset
+
+    def __len__(self):
+        return len(self.paired_prompt_dataset)
+
+    def __getitem__(self, idx):
+        return self.paired_prompt_dataset[idx]
+
+if config.paired_prompt_dataset != "":
+    # paired prompt is a csv file with two columns: target_prompt and anchor_prompt
+    paired_prompts = pd.read_csv(config.paired_prompt_dataset)
+    paired_prompts = paired_prompts.values.tolist()
+else:
+    paired_prompts = [[config.target_prompt, config.anchor_prompt]]
+
+# Go through each pairs and tokenize them
+for i in range(len(paired_prompts)):
+    target_prompt = paired_prompts[i][0]
+    anchor_prompt = paired_prompts[i][1]
+    
+    target_tokenized = tokenizer(
+        target_prompt,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    ).input_ids
+    
+    anchor_tokenized = tokenizer(
+        anchor_prompt,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt"
+    ).input_ids
+    
+    paired_prompts[i] = torch.stack([target_tokenized, anchor_tokenized])
+
+paired_prompts = paired_prompts_dataset(paired_prompts)
+
+sampler = RandomSampler(
+    paired_prompts,
+    replacement=True,
+    num_samples=10**12  # effectively infinite
+)
+
+paired_prompts_loader = iter(
+    DataLoader(
+        paired_prompts,
+        sampler=sampler,
+        batch_size=config.batch_size,
+        num_workers=0,
+    )
 )
 
 def generate(
@@ -346,26 +411,6 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
         ).input_ids.to(accelerator.device)
     eval_embeds = text_encoder(eval_tokenized)["last_hidden_state"]
 
-    target_prompts = [config.target_prompt] * config.batch_size
-    target_tokenized = tokenizer(
-            target_prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt"
-        ).input_ids.to(accelerator.device)
-    target_embeds = text_encoder(target_tokenized)["last_hidden_state"]
-
-    anchor_prompts = [config.anchor_prompt] * config.batch_size
-    anchor_tokenized = tokenizer(
-            anchor_prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt"
-        ).input_ids.to(accelerator.device)
-    anchor_embeds = text_encoder(anchor_tokenized)["last_hidden_state"]
-
     eval_fixed_latents = torch.randn(
         (eval_embeds.shape[0], 4, 64, 64),
         device=accelerator.device
@@ -389,6 +434,10 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
     # Sanity Check
     assert len(idx_ts) == len(idx_t_1s)
     global_step = 0
+
+    if config.compile_model:
+        unet = torch.compile(unet)
+        unet_orig = torch.compile(unet_orig)
 
     if config.test_loss_scale:
         traj_batch = generate(
@@ -435,7 +484,7 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
             global_step+=1
         return
 
-    progress_bar = tqdm(range(config.num_epochs * config.batch_size), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(range(config.num_epochs), disable=not accelerator.is_local_main_process)
     for epoch in progress_bar:
         progress_bar.set_description(f"Epoch {epoch}")
 
@@ -457,6 +506,22 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
                 accelerator.log({f"{config.eval_prompts[l]} {l}": [wandb.Image(eval_images[l], caption=f"step {global_step}")]}, step=global_step)
 
         optimizer.zero_grad()
+
+        paired_prompts = next(paired_prompts_loader)
+        paired_prompts = paired_prompts.to(accelerator.device)
+        target_tokenized = paired_prompts[:, 0]
+        anchor_tokenized = paired_prompts[:, 1]
+        
+        target_embeds = text_encoder(target_tokenized)["last_hidden_state"]
+        anchor_embeds = text_encoder(anchor_tokenized)["last_hidden_state"]
+
+        # B = anchor_embeds.size(0)
+        # mask = torch.rand(B, device=anchor_embeds.device) < 0.5
+        # mask = mask.unsqueeze(1).unsqueeze(1)
+        # # print(mask.shape)
+        # # print(anchor_embeds.shape)
+        # # print(target_embeds.shape)
+        # embeds = torch.where(mask, anchor_embeds, target_embeds)
 
         traj_batch = generate(
             unet=unet,
@@ -481,40 +546,51 @@ def train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer,
             x_t = traj_batch[idx_t][0]
             x_t_1 = traj_batch[idx_t_1][0]
 
-            with accelerator.accumulate(unet):
-                noise_pred_x_t = unet(x_t, t, encoder_hidden_states=target_embeds).sample
+            noise_pred_x_t = unet(x_t, t, encoder_hidden_states=target_embeds).sample
 
-                with torch.inference_mode():
-                    noise_pred_x_t_1 = unet_orig(x_t_1, t_1, encoder_hidden_states=anchor_embeds).sample
+            with torch.inference_mode():
+                noise_pred_x_t_1 = unet_orig(x_t_1, t_1, encoder_hidden_states=anchor_embeds).sample
 
-                alpha_t = alphas[t].view(B, 1, 1, 1)
-                alpha_cumprod_t = alphas_cumprod[t].view(B, 1, 1, 1)
-                alpha_cumprod_t_1 = alphas_cumprod[t_1].view(B, 1, 1, 1)
+            alpha_t = alphas[t].view(B, 1, 1, 1)
+            alpha_cumprod_t = alphas_cumprod[t].view(B, 1, 1, 1)
+            alpha_cumprod_t_1 = alphas_cumprod[t_1].view(B, 1, 1, 1)
 
-                # term1 = (x_t - torch.sqrt(alpha_t) * x_t_1)/torch.sqrt(1-alpha_cumprod_t)
-                # term2 = (torch.sqrt(alpha_t)*torch.sqrt(1-alpha_cumprod_t_1)/torch.sqrt(1-alpha_cumprod_t))*noise_pred_x_t_1
-                # target = term1 + term2
+            term1 = (x_t - torch.sqrt(alpha_cumprod_t/alpha_cumprod_t_1)*x_t_1)/torch.sqrt(1-alpha_cumprod_t)
+            term2 = ((torch.sqrt(alpha_cumprod_t/alpha_cumprod_t_1)*torch.sqrt(1-alpha_cumprod_t_1))/(torch.sqrt(1-alpha_cumprod_t)))*noise_pred_x_t_1
+            target = term1 + term2
+            # target = (torch.sqrt(1-alpha_cumprod_t) * torch.sqrt(alpha_cumprod_t_1))/(torch.sqrt(alpha_cumprod_t) * torch.sqrt(1-alpha_cumprod_t_1))*noise_pred_x_t_1
 
-                target = (torch.sqrt(1-alpha_cumprod_t))/(torch.sqrt(alpha_t)*torch.sqrt(1-alpha_cumprod_t_1))*noise_pred_x_t_1
-
-                loss = F.mse_loss(noise_pred_x_t, target)
-                accelerator.backward(loss)
-                
-                logs = {"loss": loss.item()}
-
-                if accelerator.sync_gradients:
-                    total_norm = accelerator.clip_grad_norm_(unet.parameters(), 1.0)
-                    logs["grad_norm"] = total_norm.item()
-                
-                optimizer.step()
-                lr_scheduler.step()
-                logs["lr"] = lr_scheduler.get_last_lr()[0]
-            
-            logs["L2"] = x_t.mean().item()
+            loss = F.mse_loss(noise_pred_x_t, target)
+            accelerator.backward(loss)
         
-            accelerator.log(logs, step=global_step)
-            progress_bar.set_postfix(**logs)
-            progress_bar.update(1)
-            global_step += 1
+        logs = {"loss": loss.item()}
+
+        if accelerator.sync_gradients:
+            total_norm = accelerator.clip_grad_norm_(unet.parameters(), config.max_grad_norm)
+            logs["grad_norm"] = total_norm.item()
+        
+        optimizer.step()
+        lr_scheduler.step()
+        logs["lr"] = lr_scheduler.get_last_lr()[0]
+        
+        logs["L1"] = traj_batch.abs().mean().item()
+    
+        accelerator.log(logs, step=global_step)
+        progress_bar.set_postfix(**logs)
+        global_step += 1
+
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        unet = accelerator.unwrap_model(unet)
+        if config.use_lora:
+            unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+            StableDiffusionPipeline.save_lora_weights(
+                save_directory=f"{save_dir}/{config.name}",
+                unet_lora_layers=unet_lora_state_dict,
+                safe_serialization=True,
+            )
+        else:
+            unet.save_pretrained(str(save_dir))
+
 
 train_loop(config, unet, unet_orig, vae, text_encoder, tokenizer, optimizer, lr_scheduler, scheduler)
