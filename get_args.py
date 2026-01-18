@@ -1,5 +1,3 @@
-%%writefile /kaggle/working/get_args.py
-
 import argparse
 
 """

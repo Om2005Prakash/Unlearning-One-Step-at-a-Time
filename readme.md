@@ -32,4 +32,4 @@
 ```
 
 ## Replacing Monet art to Van Gogh art
-![Example Result](./out.gif)
+![Example Result](https://raw.githubusercontent.com/Om2005Prakash/Unlearning-One-Step-at-a-Time/refs/heads/main/out.gif)
