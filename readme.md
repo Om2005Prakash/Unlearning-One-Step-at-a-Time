@@ -31,5 +31,5 @@
 --eval_prompts "San Giorgio Maggiore at Dusk, in style of Monet_San Giorgio Maggiore at Dusk, in style of Monet_San Giorgio Maggiore at Dusk, in style of Van Gogh"
 ```
 
-## Replacing Monet art to Van Gogh art
+## Result GIF:
 ![Example Result](https://raw.githubusercontent.com/Om2005Prakash/Unlearning-One-Step-at-a-Time/refs/heads/main/out.gif)
