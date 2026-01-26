@@ -3,7 +3,7 @@
 ## Quick Use
 
 ```bash
-!python gflow_unlearn.py \
+python gflow_unlearn.py \
 --model_id "CompVis/stable-diffusion-v1-4" \
 --name "monet_to_vangogh" \
 --target_prompt "monet" \
@@ -33,3 +33,37 @@
 
 ## Result GIF:
 ![Example Result](https://raw.githubusercontent.com/Om2005Prakash/Unlearning-One-Step-at-a-Time/refs/heads/main/out.gif)
+
+# Editing *Monet → Van Gogh*
+
+```bash
+python gflow_unlearn.py \
+--model_id "CompVis/stable-diffusion-v1-4" \
+--name "sunset_to_northlights" \
+--target_prompt "sunset" \
+--anchor_prompt "northern lights" \
+--paired_prompt_dataset "/kaggle/working/evening_northern_lights.csv" \
+--time_max 800 \
+--time_min 5 \
+--infer_steps 20 \
+--cfg \
+--guidance_scale 3.5 \
+--num_epochs 1000 \
+--batch_size 8 \
+--mixed_precision "bf16" \
+--use_lora \
+--lora_rank 12 \
+--seed 42 \
+--lr 1e-4\
+--save_freq 20 \
+--max_grad_norm 1.0 \
+--accumulation_steps 1 \
+--ema 0 \
+--save_dir "./unlearned_models" \
+--wandb "GFlow Simplified Sweep"\
+--eval_freq 5 \
+--eval_prompts "Peaceful alpine meadow beneath a radiant Golden Evening Sky_Peaceful alpine meadow beneath a radiant Golden Evening Sky_Peaceful alpine meadow beneath a radiant Northern Lights"
+```
+
+## Result:
+![Example Result](./sunset_northern_lights.png)
