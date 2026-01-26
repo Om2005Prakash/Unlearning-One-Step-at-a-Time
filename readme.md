@@ -34,7 +34,7 @@ python gflow_unlearn.py \
 ## Result GIF:
 ![Example Result](https://raw.githubusercontent.com/Om2005Prakash/Unlearning-One-Step-at-a-Time/refs/heads/main/out.gif)
 
-# Editing *Monet → Van Gogh*
+# Editing *Sunset → Northern Lights*
 
 ```bash
 python gflow_unlearn.py \
